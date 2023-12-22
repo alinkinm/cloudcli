@@ -243,7 +243,7 @@ def mksite():
         with open(f'album{i+1}.html', 'w') as output_file:
             output_file.write(str(soup))
 
-        client.upload_file(f'album{i+1}.html', bucket, f'album{i+1}.html')
+        client.upload_file(f'album{i+1}.html', bucket, f'album{i+1}.html', ExtraArgs={'ACL':'public-read'})
 
     with open('index.html', 'r') as file:
         html_content = file.read()
@@ -271,8 +271,8 @@ def mksite():
     with open('index.html', 'w') as output_file:
         output_file.write(str(soup))
 
-    client.upload_file('index.html', bucket, 'index.html')
-    client.upload_file('error.html', bucket, 'error.html')
+    client.upload_file('index.html', bucket, 'index.html', ExtraArgs={'ACL':'public-read'})
+    client.upload_file('error.html', bucket, 'error.html', ExtraArgs={'ACL':'public-read'})
 
     print(f'http://{bucket}.website.yandexcloud.net/')
 
