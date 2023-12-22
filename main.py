@@ -5,6 +5,10 @@ from botocore.client import ClientError
 from pathlib import Path
 import os
 import sys
+import json
+import io
+from bs4 import BeautifulSoup
+from collections import OrderedDict
 
 @click.group(chain=True)
 def main():
@@ -46,6 +50,9 @@ def upload(album, path):
 @click.option("--path", default="Default")
 def download(album, path):
     session, client, bucket = create_session()
+
+    print(bucket)
+
     response = client.list_objects(Bucket=bucket)
 
     no_album = 0
@@ -55,7 +62,15 @@ def download(album, path):
             no_album +=1
             if path == "Default":
                 client.download_file(bucket, file['Key'], file['Key'])
+                # download_response = client.get_object(Bucket=bucket, Key=file['Key'])
+                # with io.FileIO(file['Key'], 'w') as file:
+                #     for i in download_response['Body']:
+                #         file.write(i)
             else:
+                # download_response = client.get_object(Bucket=bucket, Key=file['Key'])
+                # with io.FileIO(os.path.join(path, file['Key']), 'w') as file:
+                #     for i in download_response['Body']:
+                #         file.write(i)
                 client.download_file(bucket, file['Key'], os.path.join(path, file['Key']))
         else:
             pass
@@ -134,10 +149,132 @@ def delete(album, photo):
 
 
 @click.command(name='mksite')
-#@click.option()
 def mksite():
-    pass
+    session, client, bucket = create_session()
+    print(bucket)
 
+    bucket_policy = {
+        'Version': '2012-10-17',
+        'Statement': [{
+            'Effect': 'Allow',
+            'Principal': "*",
+            'Action': ['s3:GetObject', 's3:GetObjectVersion', 's3:PutObject',
+                       's3:DeleteObject', 's3:DeleteObjectVersion', 's3:GetObjectAcl', 's3:PutObjectAcl','s3:GetBucketWebsite'],
+            'Resource': f'arn:aws:s3:::{bucket}/*'
+        },{
+            'Effect': 'Allow',
+            'Principal': "*",
+            'Action': ['s3:GetBucketWebsite', 's3:PutBucketWebsite', 's3:ListBucket', 's3:GetObject', 's3:GetObjectVersion', 's3:PutObject',
+                       's3:DeleteObject', 's3:DeleteObjectVersion', 's3:GetObjectAcl', 's3:PutObjectAcl','s3:GetBucketWebsite'],
+            'Resource': f'arn:aws:s3:::{bucket}'
+        }
+        ]
+    }
+
+    #id = client.get_caller_identity().get('Account')
+
+    bucket_policy = json.dumps(bucket_policy)
+    response = client.put_bucket_policy(Bucket=bucket, Policy=bucket_policy)
+    print(response)
+
+    website_configuration = {
+        'ErrorDocument': {'Key': 'error.html'},
+        'IndexDocument': {'Suffix': 'index.html'},
+    }
+
+    client.put_bucket_website(Bucket=bucket,
+                          WebsiteConfiguration=website_configuration)
+
+    response = client.list_objects(Bucket=bucket)
+    print(response)
+
+    albums = []
+    for file in response['Contents']:
+        if ".jpg" in file['Key'] or ".jpeg" in file['Key']:
+            albums.append(file['Key'].split('-')[0])
+
+    print(albums)
+    album_list = []
+    for i in range(len(albums)):
+        if albums[i] in album_list:
+            pass
+        else:
+            album_list.append(albums[i])
+
+    for i in range(len(album_list)):
+        img_src_list = []
+        img_name_list = []
+        for file in response['Contents']:
+            name = file['Key'].split('-')[0]
+            if album_list[i] == name:
+                img_name_list.append(file['Key'])
+
+                try:
+                    pre_url = client.generate_presigned_url('get_object',
+                                                                Params={'Bucket': bucket,
+                                                                        'Key': file['Key']},
+                                                                ExpiresIn=950400)
+                    pre = f"https://{bucket}.storage.yandexcloud.net/{file['Key']}"
+                    img_src_list.append(pre)
+                except ClientError as e:
+                    sys.stderr.write(e.response)
+
+        with open('album_page.html', 'r') as file:
+            html_content = file.read()
+
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        new_div = soup.new_tag('div')
+        new_div['class'] = "galleria"
+
+        for i in range(len(img_src_list)):
+            attributes = OrderedDict([
+                ('src', img_src_list[i]),
+                ('data-title', img_name_list[i])
+            ])
+            new_img = soup.new_tag('img', **attributes)
+
+            new_div.append(new_img)
+
+        target_location = soup.find('body')
+
+        target_location.insert(1, new_div)
+
+        with open(f'album{i+1}.html', 'w') as output_file:
+            output_file.write(str(soup))
+
+        client.upload_file(f'album{i+1}.html', bucket, f'album{i+1}.html')
+
+    with open('index.html', 'r') as file:
+        html_content = file.read()
+
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    new_ul = soup.new_tag('ul')
+
+    for i in range(len(album_list)):
+        new_li = soup.new_tag('li')
+
+        attributes = OrderedDict([
+            ('href', f'album{i+1}.html')
+        ])
+
+        new_a = soup.new_tag('a', **attributes)
+        new_a.insert(0, album_list[i])
+        new_li.append(new_a)
+
+        new_ul.append(new_li)
+
+    target_location = soup.find('ul')
+    target_location.replace_with(new_ul)
+
+    with open('index.html', 'w') as output_file:
+        output_file.write(str(soup))
+
+    client.upload_file('index.html', bucket, 'index.html')
+    client.upload_file('error.html', bucket, 'error.html')
+
+    print(f'http://{bucket}.website.yandexcloud.net/')
 
 @click.command(name='init')
 #@click.option()
@@ -192,9 +329,10 @@ def init():
         region_name=def_reg,
         endpoint_url=endpoint
     )
-
-
-    buck = client.create_bucket(Bucket=bucket1)
+    try:
+        client.head_bucket(Bucket=bucket1)
+    except ClientError:
+        buck = client.create_bucket(Bucket=bucket1)
 
 def create_session():
     home = str(Path.home())
@@ -230,11 +368,14 @@ def create_session():
         endpoint_url=endpoint
     )
 
+
+
     session = boto3.Session(
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         region_name=def_reg
     )
+
 
     return session, client, bucket1
 
@@ -246,7 +387,9 @@ main.add_command(upload)
 main.add_command(download)
 main.add_command(list)
 main.add_command(delete)
+main.add_command(mksite)
 
 
 if __name__ == '__main__':
     main()
+
